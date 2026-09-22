@@ -1,0 +1,23 @@
+# 虚拟环境，巨大，绝对不上传
+.venv/
+venv/
+
+# IDE配置文件（pycharm的配置，别人不需要）
+.idea/
+
+# 日志文件
+logs/
+*.log
+
+# 向量库缓存，每次运行可自动重建
+chroma_db/
+
+# 环境密钥
+.env
+
+# 缓存、编译文件（所有目录下的py缓存）
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
