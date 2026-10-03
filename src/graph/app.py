@@ -1,37 +1,35 @@
 from langgraph.graph import StateGraph, END
 from .state import AgentState, UserIntent
 from langchain_core.messages import HumanMessage, AIMessage
+import os 
+import json
+from langchain_openai import ChatOpenAI
+from  dotenv import load_dotenv
+from pathlib import Path
+
 
 # ==========================================
-# 1. 定义节点 (Node) - 机器人具体干活的地方
+# 1. 加载环境变量 & 初始化大模型 (LLM)
 # ==========================================
 
+load_dotenv()
 
-def intent_route_node(state:AgentState):
-    """
-    意图识别节点 (总指挥)
-    读取用户最新消息，调用判断逻辑，更新状态里的意图
-    """
-    print("\n---  进入 [意图识别] 节点 ---")
+llm = ChatOpenAI(
+    model=os.getenv("MODEL_NAME","qwen3-max"),
+    openai_api_key=os.getenv("DASHSCOPE_API_KEY"),
+    openai_api_base=os.getenv("DASHSCOPE_BASE_URL"),
+    temperature=0,
+)
 
-    #1.获取用户最后说的一句话
-    last_message = state["messages"][-1].content
 
-    #2.判断意图，调用独立的意识判断函数（获取意图枚举和给用户的回复)
-    intent,reply = _keyword_fallback(last_message)
+# ==========================================
+# 2. 定义核心函数
+# ==========================================
 
-    #3.打印日志，方便调试
-    print(f"意图识别：意图={intent.value},回复={reply}")
-
-    #4.返回字典，更新状态机里的状态（current_intent 和 messages)
-    return {
-        "current_intent": intent,
-        "messages": [AIMessage(content=reply)]
-    }
 
 def _keyword_fallback(last_message:str):
     """
-    临时关键词兜底逻辑（Day 2 使用，Day 3 将被 LLM 替换）
+    关键词兜底逻辑(Day 3 降级用，防止大模型调用失败)
     """
     if any(k in last_message for k in ["报修","坏了","故障","不转"]):
         intent = UserIntent.REPAIR
@@ -50,12 +48,78 @@ def _keyword_fallback(last_message:str):
 
 
 
+def _llm_intent_recognition(last_message:str):
+    """
+    Day 3 核心：大模型意识识别函数
+    让 AI 听懂人话，并输出结构化 JSON
+    """
+    PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
+    system_prompt = (PROMPTS_DIR / "intent.txt").read_text(encoding="utf-8")
+
+    try:
+        # 1. 调用大模型
+        response = llm.invoke([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": last_message},
+        ])
+
+        # 2. 解析大模型返回的 JSON
+        result = json.loads(response.content)
+        intent_name = result["intent"]
+        reply_text = result["reply"]
+
+        # 3. 将字符串转为枚举对象
+        intent_map = {
+            "CHITCHAT": UserIntent.CHITCHAT,
+            "CONSULT": UserIntent.CONSULT,
+            "HUMAN": UserIntent.HUMAN,
+            "REPAIR": UserIntent.REPAIR,
+        }
+        intent = intent_map.get(intent_name, UserIntent.CHITCHAT)
+
+    except Exception as e:
+         # 大模型调用失败时，降级为关键词兜底（防止系统不可用）
+        print(f"[警告] 大模型调用失败: {e}，降级使用关键词兜底")
+        intent, reply_text = _keyword_fallback(last_message)
+
+    return intent, reply_text
+
+    
+# ==========================================
+# 3. 定义节点 (Node)
+# ==========================================
+
+def intent_route_node(state: AgentState):
+    print("\n---  进入 [意图识别] 节点 ---")
+
+    last_message = state["messages"][-1].content
+
+    intent, reply_text = _llm_intent_recognition(last_message)
+
+    print(f"[意图识别] 意图：{intent.value}，回复：{reply_text}")
+
+    return {
+        "messages": [AIMessage(content=reply_text)],
+        "current_intent": intent,
+        "user_query": last_message,
+    }
+    
+
 def rag_consult_node(state:AgentState):
     """RAG 知识库咨询节点 (Day 3 实现)"""
     print("\n---  进入 [RAG 咨询] 节点 ---")
-    reply = "[RAG 节点] 正在查询知识库... (暂未实现)"
-    return {"messages": [AIMessage(content=reply)]}
+     # 1. 从 state 里取用户最新输入的 query
+    user_question = state.get("user_query") or ""
 
+    # 2. 调用 knowledge.py 里的 ask 函数
+    from rag.knowledge import ask
+    answer = ask(user_question, k=3)
+    # 3. 兜底处理
+    if not answer or answer.strip() == "":
+        answer = "抱歉，知识库中未找到相关信息，您可以换个问法试试。"
+
+    # 4. 返回
+    return {"messages": [AIMessage(content=answer)]}
 def repair_collect_node(state: AgentState):
     """报修槽位收集节点 (Day 4-5 实现)"""
     print("\n---  进入 [报修收集] 节点 ---")
@@ -88,7 +152,7 @@ graph.add_node("human_fallback", human_fallback_node)
 # 设置入口点：程序启动后，第一个执行的节点
 graph.set_entry_point("intent_route")
 
-# 【新增】条件路由
+# 条件路由：根据意图，选择执行节点
 def route_by_intent(state:AgentState)->str:
     """根据意图，选择执行节点"""
     intent = state["current_intent"]
@@ -99,7 +163,7 @@ def route_by_intent(state:AgentState)->str:
     elif intent == UserIntent.HUMAN:
         return "human_fallback"
     else:
-        return "rag_consult"
+        return "__end__"
 
 graph.add_conditional_edges(
     "intent_route",

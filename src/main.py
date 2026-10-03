@@ -41,5 +41,9 @@ def main():
         print(f" 机器人: {ai_response}\n")
         print("-" * 50)
 
+from rag.knowledge import ask
+print("=== 独立测试 ===")
+print(ask("机器人迷路了怎么办？", k=3))
+
 if __name__ == "__main__":
     main()

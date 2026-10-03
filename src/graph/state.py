@@ -37,3 +37,4 @@ class AgentState(TypedDict):
     # --- 控制流标记 (Day 6-8 会用) ---
     is_task_interrupted: bool          # 任务是否被打断
     fallback_count: int                # 兜底/重试次数
+    user_query: Optional[str]              # 用户最新输入的 query
