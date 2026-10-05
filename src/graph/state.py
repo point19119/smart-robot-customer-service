@@ -4,6 +4,7 @@ from enum import Enum
 from typing import Annotated, List, Optional, TypedDict
 from langchain_core.messages import BaseMessage
 from langgraph.graph import add_messages
+from typing import Dict
 
 
 class UserIntent(str, Enum):
@@ -30,11 +31,13 @@ class AgentState(TypedDict):
     current_intent: Optional[UserIntent]  # 当前意图
     confidence_score: float # 用户意图置信度
 
-     # --- 业务对象与槽位 (Day 4-5 会用) ---
-    # focused_device: Optional[DeviceCard]   # 当前聚焦的设备卡片
-    # repair_slots: Optional[RepairSlots]    # 报修收集到的槽位
+     # --- 业务对象与槽位  --- 
+    repair_slots: Dict[str, str]    # 收集到的槽位，例如 {"device_model": "X1", "issue": "无法充电"}
+    ticket_id: Optional[str]        # 最终生成的工单号，例如 "TK-20261005-0001"
+    ticket_status: Optional[str]    # 工单状态：collecting / created / failed
     
     # --- 控制流标记 (Day 6-8 会用) ---
     is_task_interrupted: bool          # 任务是否被打断
     fallback_count: int                # 兜底/重试次数
+
     user_query: Optional[str]              # 用户最新输入的 query

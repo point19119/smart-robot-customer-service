@@ -6,6 +6,10 @@ import json
 from langchain_openai import ChatOpenAI
 from  dotenv import load_dotenv
 from pathlib import Path
+from rag.knowledge import ask
+import random
+from datetime import datetime
+
 
 
 # ==========================================
@@ -92,18 +96,23 @@ def _llm_intent_recognition(last_message:str):
 def intent_route_node(state: AgentState):
     print("\n---  进入 [意图识别] 节点 ---")
 
-    last_message = state["messages"][-1].content
+    # 如果正在报修收集中，跳过意图识别，直接回 repair_collect
+    if state.get("ticket_status") == "collecting":
+        print("[意图识别] 检测到报修收集中，跳过意图识别")
+        return {"current_intent": UserIntent.REPAIR}
 
-    intent, reply_text = _llm_intent_recognition(last_message)
+    # 只取最后一条 HumanMessage，跳过 AI 的回复
+    last_message = state["user_query"]
 
-    print(f"[意图识别] 意图：{intent.value}，回复：{reply_text}")
+    intent , _ = _llm_intent_recognition(last_message)
+
+    print(f"[意图识别] 意图：{intent.value}")
 
     return {
-        "messages": [AIMessage(content=reply_text)],
         "current_intent": intent,
-        "user_query": last_message,
     }
-    
+
+
 
 def rag_consult_node(state:AgentState):
     """RAG 知识库咨询节点 (Day 3 实现)"""
@@ -112,7 +121,7 @@ def rag_consult_node(state:AgentState):
     user_question = state.get("user_query") or ""
 
     # 2. 调用 knowledge.py 里的 ask 函数
-    from rag.knowledge import ask
+
     answer = ask(user_question, k=3)
     # 3. 兜底处理
     if not answer or answer.strip() == "":
@@ -120,11 +129,73 @@ def rag_consult_node(state:AgentState):
 
     # 4. 返回
     return {"messages": [AIMessage(content=answer)]}
+
+
 def repair_collect_node(state: AgentState):
-    """报修槽位收集节点 (Day 4-5 实现)"""
-    print("\n---  进入 [报修收集] 节点 ---")
-    reply = "[报修节点] 正在收集SN码和故障信息... (暂未实现)"
-    return {"messages": [AIMessage(content=reply)]}
+    """报修槽位收集节点 收集槽位 + 模拟创建工单(Day 4-5 实现)"""
+    print("\n---  进入 [报修槽位收集] 节点 ---")
+
+    # 1. 从 state 里取用户最新输入的 query
+    last_msg = state.get("user_query") or ""
+    slots = state.get("repair_slots", {})
+
+    # 上一轮已生成工单，这一轮是新报修，清空旧状态
+    if state.get("ticket_status") == "created":
+        slots = {}
+
+    # 2 .简单的槽位提取（Day 4 先用关键词匹配，Day 5 再用 LLM 提取）
+    #    这里只是演示"从用户话里抓信息"，day5会用 LLM 做结构化提取
+    if "SN" in last_msg or "序列号" in last_msg or "编号" in last_msg or "设备号" in last_msg or "型号" in last_msg:
+        slots["device_model"] = last_msg.split()[-1]  # 简单取最后一个词作为 设备型号
+    if "问题" in last_msg or "不转" in last_msg or "坏了" in last_msg or "故障" in last_msg:
+        slots["issue"] = last_msg   # 简单取整句作为 问题
+
+    # 3. 判断槽位是否收集完整
+    #    我们定义：至少要有 device_model 和 issue 两个字段
+    has_model = bool(slots.get("device_model"))
+    has_issue = bool(slots.get("issue"))
+
+    if not has_model or not has_issue:
+        # --- 信息不全，进入追问（对应流程图的 L 节点）---
+        missing = []
+        if not has_model:
+            missing.append("设备型号")
+        if not has_issue:
+            missing.append("故障现象")
+
+        prompt = "收到您的报修需求。为了帮您生成工单，请补充以下信息："
+        for item in missing:
+            prompt += f"\n- {item}"
+        prompt += "\n\n您可以这样回复：型号是 X1，故障是无法充电。"
+
+
+        return {
+            "messages": [AIMessage(content=prompt)],
+            "repair_slots": slots,
+            "ticket_status": "collecting",
+        }
+
+    # 4. 槽位齐全，模拟创建工单
+    date_str = datetime.now().strftime("%Y%m%d")
+    fake_id = f"TK-{date_str}-{random.randint(1000, 9999)}"
+
+    reply = (
+        f" 工单已为您成功创建！\n\n"
+        f" 工单号：**{fake_id}**\n"
+        f"️ 设备型号：{slots['device_model']}\n"
+        f" 故障现象：{slots['issue']}\n"
+        f"️ 预计处理时间：24 小时内\n\n"
+        f"售后专员将尽快与您联系，请留意短信或电话通知。"
+    )
+
+    return {
+        "messages": [AIMessage(content=reply)],
+        "repair_slots": slots,
+        "ticket_id": fake_id,
+        "ticket_status": "created",
+    }
+
+
 
 def human_fallback_node(state: AgentState):
     """人工兜底节点 (Day 6 实现)"""
@@ -163,21 +234,18 @@ def route_by_intent(state:AgentState)->str:
     elif intent == UserIntent.HUMAN:
         return "human_fallback"
     else:
-        return "__end__"
+        return END
 
-graph.add_conditional_edges(
-    "intent_route",
-    route_by_intent,
-    {
-        "rag_consult":"rag_consult",
-        "repair_collect": "repair_collect",
-        "human_fallback": "human_fallback"
-    }
-)
+graph.add_conditional_edges("intent_route",route_by_intent)
 
+def repair_route(state:AgentState)->str:
+#报修节点执行完直接结束本轮，等待用户下一轮输入
+    return END
+
+graph.add_conditional_edges("repair_collect",repair_route,)
 
 graph.add_edge("rag_consult",END)
-graph.add_edge("repair_collect",END)
+
 graph.add_edge("human_fallback",END)
 
 app = graph.compile()
