@@ -9,6 +9,7 @@ from pathlib import Path
 from rag.knowledge import ask
 import random
 from datetime import datetime
+from graph.nodes._llm_extract_slots import _llm_extract_slots
 
 
 
@@ -143,12 +144,17 @@ def repair_collect_node(state: AgentState):
     if state.get("ticket_status") == "created":
         slots = {}
 
-    # 2 .简单的槽位提取（Day 4 先用关键词匹配，Day 5 再用 LLM 提取）
-    #    这里只是演示"从用户话里抓信息"，day5会用 LLM 做结构化提取
-    if "SN" in last_msg or "序列号" in last_msg or "编号" in last_msg or "设备号" in last_msg or "型号" in last_msg:
-        slots["device_model"] = last_msg.split()[-1]  # 简单取最后一个词作为 设备型号
-    if "问题" in last_msg or "不转" in last_msg or "坏了" in last_msg or "故障" in last_msg:
-        slots["issue"] = last_msg   # 简单取整句作为 问题
+    reset_keywords = ["重新报修", "重新开始", "从头", "换一个", "取消"]
+    if any(k in last_msg for k in reset_keywords):
+        slots = {}
+        return {
+            "messages": [AIMessage(content="好的，重新开始报修，请提供设备型号和故障现象。")],
+            "repair_slots": slots,
+            "ticket_status": "collecting",
+            }
+
+    # 2 .槽位提取（Day 4 先用关键词匹配，Day 5 再用 LLM 提取）
+    slots = _llm_extract_slots(last_msg, slots)
 
     # 3. 判断槽位是否收集完整
     #    我们定义：至少要有 device_model 和 issue 两个字段
