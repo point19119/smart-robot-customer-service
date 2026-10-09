@@ -8,7 +8,6 @@ from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 load_dotenv() # 加载.env
 
-
 def init_vector_store():
     """
     读取知识库文件夹下的所有txt，切片后存入本地向量数据库
@@ -54,7 +53,7 @@ def init_vector_store():
 
 def retrieve(query: str, k: int = 3):
     """从已有向量库中检索最相关的 k 条知识"""
-    from pathlib import Path 
+
     # 当前文件所在目录
     current_dir = Path(__file__).parent
     # 向量数据库文件夹路径
@@ -72,8 +71,8 @@ def retrieve(query: str, k: int = 3):
         embedding_function=embeddings,
     )
     # 相似度检索：把query转向量，在库里面找距离最近k条
-    docs = vectorstore.similarity_search(query, k=k)
-    return docs
+    docs_with_score = vectorstore.similarity_search_with_score(query, k=k)
+    return docs_with_score
 
 
 
@@ -86,14 +85,24 @@ llm = ChatOpenAI(
 )
 
 def ask(question: str, k: int = 3) -> str:
-    """RAG 问答入口：检索 -> 拼 prompt -> 调大模型 -> 返回答案"""
+    """RAG 问答入口：检索 -> 拼 prompt -> 调大模型 -> 返回答案和置信度"""
     # 1. 检索相关知识
-    docs = retrieve(question, k=k)
+    docs_with_score = retrieve(question, k=k)
 
-    # 2. 把检索结果拼成上下文
+    if not docs_with_score:
+        return {"answer": "抱歉，知识库中未找到相关内容", "confidence": 0.0, "sources": []}
+
+    # 2. 取最高相似度作为置信度
+    # Chroma 的 similarity_search_with_score 返回的是余弦相似度，范围约 -1 ~ 1
+    # 归一化到 0 ~ 1：(1 + score) / 2
+    top_score = docs_with_score[0][1]
+    confidence = max(0.0, min(1.0, (1 + top_score) / 2))
+
+    # 3. 拼上下文
+    docs = [doc for doc, _ in docs_with_score]
     context = "\n".join(doc.page_content for doc in docs)
 
-    # 3. 拼 prompt
+    # 4. 拼 prompt
     prompt = f"""你是一个客服助手，请严格根据以下知识库内容回答用户问题。
 如果知识库中没有相关信息，请说"抱歉，知识库中未找到相关内容"，不要编造。
 
@@ -102,9 +111,13 @@ def ask(question: str, k: int = 3) -> str:
 
 用户问题：{question}"""
 
-    # 4. 调用大模型
+    # 5. 调用大模型
     response = llm.invoke([{"role": "user", "content": prompt}])
-    return response.content
+    answer = response.content
+    # LLM 自己说答不上来，置信度直接归零
+    if not answer or "未找到" in answer or "不知道" in answer:
+        confidence = 0.0
+    return {"answer": answer, "confidence": round(confidence,4), "sources": docs_with_score}
 
 
 if __name__ == "__main__":
