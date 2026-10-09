@@ -10,7 +10,6 @@ from typing import Dict
 class UserIntent(str, Enum):
     REPAIR = "repair"       #报修
     CONSULT = "consult"     #咨询/问答 
-    CHITCHAT = "chitchat"       #闲聊
     HUMAN = "human"         #人工
     UNKNOWN = "unknown"       #无法识别
 

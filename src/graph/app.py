@@ -10,6 +10,7 @@ from rag.knowledge import ask
 import random
 from datetime import datetime
 from graph.nodes._llm_extract_slots import _llm_extract_slots
+from services.ticket_service import create_ticket
 
 
 
@@ -46,8 +47,8 @@ def _keyword_fallback(last_message:str):
         intent = UserIntent.HUMAN
         reply="正在为您转接人工客服，请稍候..."
     else:
-        intent = UserIntent.CHITCHAT
-        reply="您好！我是扫地机器人售后助手。您可以问我关于设备维修、使用指南等问题。"
+        intent = UserIntent.UNKNOWN
+        reply = "抱歉，我暂时无法理解您的意思。您可以询问设备维修、使用指南等问题，或回复[人工]转接客服。"
 
     return intent,reply
 
@@ -75,12 +76,11 @@ def _llm_intent_recognition(last_message:str):
 
         # 3. 将字符串转为枚举对象
         intent_map = {
-            "CHITCHAT": UserIntent.CHITCHAT,
             "CONSULT": UserIntent.CONSULT,
             "HUMAN": UserIntent.HUMAN,
             "REPAIR": UserIntent.REPAIR,
         }
-        intent = intent_map.get(intent_name, UserIntent.CHITCHAT)
+        intent = intent_map.get(intent_name, UserIntent.UNKNOWN)
 
     except Exception as e:
          # 大模型调用失败时，降级为关键词兜底（防止系统不可用）
@@ -181,33 +181,74 @@ def repair_collect_node(state: AgentState):
             "ticket_status": "collecting",
         }
 
-    # 4. 槽位齐全，模拟创建工单
-    date_str = datetime.now().strftime("%Y%m%d")
-    fake_id = f"TK-{date_str}-{random.randint(1000, 9999)}"
+    # 4. 槽位齐全，模拟调用业务 API 创建工单
+    try:
+        ticket = create_ticket(device_model=slots["device_model"], issue=slots["issue"])
+        slots["ticket_id"] = ticket["ticket_id"]
 
+        reply = (
+            f" 工单已为您成功创建！\n\n"
+            f" 工单号：**{slots['ticket_id']}**\n"
+            f"️ 设备型号：{slots['device_model']}\n"
+            f" 故障现象：{slots['issue']}\n"
+            f"️ 预计处理时间：24 小时内\n\n"
+            f"售后专员将尽快与您联系，请留意短信或电话通知。"
+        )
+
+        return {
+            "messages": [AIMessage(content=reply)],
+            "repair_slots": slots,
+            "ticket_id": slots["ticket_id"],
+            "ticket_status": "created",
+        }
+    except Exception as e:
+        print(f"[警告] 工单创建失败: {e}")
+        return {
+            "error_info": f"api_call_failed: {str(e)}",
+            "ticket_status": "human_transfer",
+        }
+
+
+def human_fallback_node(state: AgentState):
+    """人工兜底节点 """
+    print("\n---  进入 [人工兜底] 节点 ---")
+    # 1. 读取异常来源，生成差异化提示
+    error_info = state.get("error_info", "")  # 上游节点抛出的异常标识
+
+    if error_info == "rag_low_confidence":
+        # RAG 检索结果置信度低于阈值，知识库无法给出可靠答案
+        reason = "知识库中未找到与您问题相关的高置信度结果"
+    elif error_info.startswith("api_call_failed"):
+        # 业务接口调用异常（网络超时、服务不可用等）
+        reason = "后台服务暂时无响应"
+    else:
+        # 兜底：意图未知、用户主动要求转人工等其它情况
+        reason = "我暂时无法理解您的意思"
+
+    # 2. 收集已积累的报修信息，传递给人工客服
+    slots = state.get("repair_slots", {})  # 此前槽位收集节点已填写的信息
+    info_parts = []
+
+    if slots.get("device_model"):
+        info_parts.append(f"设备型号：{slots['device_model']}")
+    if slots.get("issue"):
+        info_parts.append(f"故障现象：{slots['issue']}")
+
+    # 有信息则拼接，无信息则显示“无”
+    context = "\n".join(info_parts) if info_parts else "无"
+
+    # 3. 组装最终回复
     reply = (
-        f" 工单已为您成功创建！\n\n"
-        f" 工单号：**{fake_id}**\n"
-        f"️ 设备型号：{slots['device_model']}\n"
-        f" 故障现象：{slots['issue']}\n"
-        f"️ 预计处理时间：24 小时内\n\n"
-        f"售后专员将尽快与您联系，请留意短信或电话通知。"
+        f"抱歉，{reason}，已为您转接人工客服。\n\n"
+        f"【已为您同步的信息】\n{context}\n\n"
+        f"客服热线：400-800-1234（工作日 9:00-18:00）\n"
+        f"您也可以直接拨打热线，报上工单号可加快处理。"
     )
 
     return {
         "messages": [AIMessage(content=reply)],
-        "repair_slots": slots,
-        "ticket_id": fake_id,
-        "ticket_status": "created",
-    }
-
-
-
-def human_fallback_node(state: AgentState):
-    """人工兜底节点 (Day 6 实现)"""
-    print("\n---  进入 [人工兜底] 节点 ---")
-    reply = "抱歉，我没太理解您的问题。是否需要转接人工客服？"
-    return {"messages": [AIMessage(content=reply)]}
+        "ticket_status": "human_transfer"
+        }
 
 
 # ==========================================
@@ -242,13 +283,18 @@ def route_by_intent(state:AgentState)->str:
     else:
         return END
 
+def route_after_repair(state: AgentState):
+    if state.get("ticket_status") == "created":
+        return END
+    elif state.get("ticket_status") == "human_transfer":
+        return "human_fallback"
+    else:
+        return END
+
+
 graph.add_conditional_edges("intent_route",route_by_intent)
 
-def repair_route(state:AgentState)->str:
-#报修节点执行完直接结束本轮，等待用户下一轮输入
-    return END
-
-graph.add_conditional_edges("repair_collect",repair_route,)
+graph.add_conditional_edges("repair_collect",route_after_repair)
 
 graph.add_edge("rag_consult",END)
 
