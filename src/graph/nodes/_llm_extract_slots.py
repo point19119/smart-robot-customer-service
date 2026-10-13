@@ -3,15 +3,16 @@ from dotenv import load_dotenv
 load_dotenv() # 加载.env
 import json
 import os
+from config import config
 
 
 load_dotenv()
 llm = ChatOpenAI(
-    model=os.getenv("MODEL_NAME", "qwen3-max"),
-    openai_api_key=os.getenv("DASHSCOPE_API_KEY"),
-    openai_api_base=os.getenv("DASHSCOPE_BASE_URL"),
+    model=config.rag_model,
+    openai_api_key=config.dashscope_api_key,
+    openai_api_base=config.dashscope_base_url,
     temperature=0,
-    timeout=30,
+    timeout=config.llm_timeout,
 )
 
 def _llm_extract_slots(last_msg: str, existing_slots: dict) -> dict:

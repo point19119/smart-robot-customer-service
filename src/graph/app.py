@@ -11,6 +11,7 @@ import random
 from datetime import datetime
 from graph.nodes._llm_extract_slots import _llm_extract_slots
 from services.ticket_service import create_ticket
+from config import config
 
 
 
@@ -21,9 +22,9 @@ from services.ticket_service import create_ticket
 load_dotenv()
 
 llm = ChatOpenAI(
-    model=os.getenv("MODEL_NAME","qwen3-max"),
-    openai_api_key=os.getenv("DASHSCOPE_API_KEY"),
-    openai_api_base=os.getenv("DASHSCOPE_BASE_URL"),
+    model=config.intent_model,
+    openai_api_key=config.dashscope_api_key,
+    openai_api_base=config.dashscope_base_url,
     temperature=0,
 )
 
@@ -119,7 +120,6 @@ def rag_consult_node(state:AgentState):
     """RAG 知识库咨询节点 (Day 3 实现)"""
     print("\n---  进入 [RAG 咨询] 节点 ---")
 
-    CONFIDENCE_THRESHOLD = 0.6
      # 1. 从 state 里取用户最新输入的 query
     user_question = state.get("user_query") or ""
 
@@ -128,10 +128,10 @@ def rag_consult_node(state:AgentState):
     result = ask(user_question, k=3)
     answer = result.get("answer", "抱歉，知识库中未找到相关内容")
     confidence = result.get("confidence", 0.0)
-    print(f"[RAG] 置信度: {confidence:.2f}, 阈值: {CONFIDENCE_THRESHOLD}")
+    print(f"[RAG] 置信度: {confidence:.2f}, 阈值: {config.rag_confidence_threshold}")
 
     # 3. 判断置信度是否低于阈值, 如果低于阈值，则转人工兜底
-    if confidence < CONFIDENCE_THRESHOLD:
+    if confidence < config.rag_confidence_threshold:
         print("[RAG] 置信度低于阈值，转人工兜底")
         return {
             "error_info": "rag_low_confidence",
@@ -296,7 +296,7 @@ def route_by_intent(state:AgentState)->str:
     elif intent == UserIntent.HUMAN:
         return "human_fallback"
     else:
-        return END
+        return "human_fallback"
 
 def route_after_repair(state: AgentState):
     if state.get("ticket_status") == "created":

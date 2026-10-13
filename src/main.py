@@ -1,9 +1,8 @@
 import os
-from dotenv import load_dotenv
 from graph.app import app  # 导入我们刚写的图
 from langchain_core.messages import HumanMessage
+from config import config
 
-load_dotenv()
 def main():
     print(" 欢迎使用扫地机器人智能售后系统 v2.0")
     print("输入 'quit' 退出对话\n")

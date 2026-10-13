@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -6,16 +5,14 @@ from langchain_community.document_loaders import TextLoader
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
-load_dotenv() # 加载.env
+from config import config, BASE_DIR
 
 def init_vector_store():
     """
     读取知识库文件夹下的所有txt，切片后存入本地向量数据库
     """
-    # 找到知识库文件夹：从 knowledge.py 向上回退两层到 src/，再进 data/knowledge/
-    current_dir = Path(__file__).parent
-    knowledge_dir = current_dir.parent / "data" / "knowledge"
-    db_dir = current_dir.parent / "db" / "chroma_db"
+    knowledge_dir = BASE_DIR / config.knowledge_dir
+    db_dir = BASE_DIR / "db" / "chroma_db"
     print(f"正在加载知识库目录: {knowledge_dir}")
     # 读取所有 txt 文件
     documents = []
@@ -36,8 +33,8 @@ def init_vector_store():
     texts = text_splitter.split_documents(documents)
 
     embeddings = DashScopeEmbeddings(
-        model="text-embedding-v3",
-        dashscope_api_key=os.getenv("DASHSCOPE_API_KEY")
+        model=config.embedding_model,
+        dashscope_api_key=config.dashscope_api_key,
     )
 
     # 构建向量库
@@ -54,15 +51,12 @@ def init_vector_store():
 def retrieve(query: str, k: int = 3):
     """从已有向量库中检索最相关的 k 条知识"""
 
-    # 当前文件所在目录
-    current_dir = Path(__file__).parent
-    # 向量数据库文件夹路径
-    db_dir = current_dir.parent / "db" / "chroma_db"
+    db_dir = BASE_DIR / "db" / "chroma_db"
 
     # 初始化embedding模型，用来把用户query转向量
     embeddings = DashScopeEmbeddings(
-        model="text-embedding-v3",
-        dashscope_api_key=os.getenv("DASHSCOPE_API_KEY"),
+        model=config.embedding_model,
+        dashscope_api_key=config.dashscope_api_key,
     )
 
     # 加载**已经建好、持久化保存在本地**的向量库，不是新建！
@@ -77,11 +71,11 @@ def retrieve(query: str, k: int = 3):
 
 
 llm = ChatOpenAI(
-    model=os.getenv("MODEL_NAME", "qwen3-max"),
-    openai_api_key=os.getenv("DASHSCOPE_API_KEY"),
-    openai_api_base=os.getenv("DASHSCOPE_BASE_URL"),
+    model=config.rag_model,
+    openai_api_key=config.dashscope_api_key,
+    openai_api_base=config.dashscope_base_url,
     temperature=0,
-    timeout=30,
+    timeout=config.llm_timeout,
 )
 
 def ask(question: str, k: int = 3) -> str:
