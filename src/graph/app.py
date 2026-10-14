@@ -5,13 +5,16 @@ from graph.nodes.rag import rag_consult_node
 from graph.nodes.repair import repair_collect_node
 from graph.nodes.human import human_fallback_node
 
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from contextlib import asynccontextmanager
+import os
 
 # ==========================================
 # 构建图 (Graph) - 定义数据流向
 # ==========================================
         
 
-print("️  正在初始化 LangGraph 状态机...")
+
 # 创建图实例，绑定状态类型
 
 graph = StateGraph(AgentState)
@@ -61,5 +64,17 @@ graph.add_conditional_edges("rag_consult", route_after_rag)
 
 graph.add_edge("human_fallback",END)
 
+@asynccontextmanager
+async def get_graph():
+    # 确保 db 目录存在
+    _db_dir = os.path.join(os.path.dirname(__file__), '..', 'db')
+    os.makedirs(_db_dir, exist_ok=True)
+    _db_path = os.path.join(_db_dir, 'conversation.db')
+
+    # from_conn_string 返回的是 async context manager，直接用 async with 接管
+    async with AsyncSqliteSaver.from_conn_string(_db_path) as checkpointer:
+        compiled = graph.compile(checkpointer=checkpointer)
+        print(" LangGraph 初始化成功，已启用会话持久化\n")
+        yield compiled
+
 app = graph.compile()
-print(" LangGraph 初始化成功！\n")
