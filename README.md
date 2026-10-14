@@ -219,17 +219,15 @@ python main.py
 
 ## 演示截图
 
-> 以下为项目运行截图位置，请替换为实际截图：
 
 **图1：对话界面**
 
-![对话界面](./screenshots/chat_interface.png)
+![对话界面](./src/screenshots/chat_interface.png)
 
 
 **图2：意图识别效果**
 
-![意图识别](./screenshots/intent_demo.png)
-
+![意图识别](./src/screenshots/intent_demo.png)
 
 ---
 
