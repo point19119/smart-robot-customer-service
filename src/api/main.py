@@ -11,6 +11,8 @@ from pydantic import BaseModel
 from langchain_core.messages import HumanMessage
 
 from graph.app import get_graph
+from graph.state import UserIntent
+import json
 
 
 # 全局变量：由 lifespan 在启动时初始化
@@ -63,6 +65,13 @@ async def chat(request: ChatRequest):
     if _graph_app is None:
         raise HTTPException(status_code=503, detail="服务未就绪")
 
+    # 1. 先拿上一轮状态
+    snapshot = await _graph_app.aget_state(
+        {"configurable": {"thread_id": request.session_id}}
+    )
+    prev = snapshot.values if snapshot else None
+
+    # 2. 构建初始 state
     state = {
         "session_id": request.session_id,
         "messages": [HumanMessage(content=request.message)],
@@ -75,6 +84,13 @@ async def chat(request: ChatRequest):
         "ticket_id": None,
         "ticket_status": None,
     }
+
+    # 3. 如果上一轮正在报修收集，把状态续上
+    if prev:
+        if prev.get("ticket_status") == "collecting":
+            state["ticket_status"] = "collecting"
+            state["repair_slots"] = prev.get("repair_slots", {})
+            state["current_intent"] = UserIntent.REPAIR 
 
     result = await _graph_app.ainvoke(state, config={"configurable": {"thread_id": request.session_id}})
     ai_response = result["messages"][-1].content
@@ -98,32 +114,62 @@ async def stream_chat(
     if _graph_app is None:
         raise HTTPException(status_code=503, detail="服务未就绪")
 
+    # 1. 取上一轮状态
+    snapshot = await _graph_app.aget_state(
+        {"configurable": {"thread_id": session_id}}
+    )
+    prev = snapshot.values if snapshot else None
+
+    # 2. 初始 state
+    
+    state = {
+        "session_id": session_id,
+        "messages": [HumanMessage(content=message)],
+        "user_query": message,
+        "current_intent": None,
+        "confidence_score": 0.0,
+        "is_task_interrupted": False,
+        "fallback_count": 0,
+        "repair_slots": {},
+        "ticket_id": None,
+        "ticket_status": None,
+    }
+
+    # 3. 续报修收集状态
+    if prev:
+        if prev.get("ticket_status") == "collecting":
+            state["ticket_status"] = "collecting"
+            state["repair_slots"] = prev.get("repair_slots", {})
+            state["current_intent"] = UserIntent.REPAIR
     async def event_stream():
-        yield f'data: {{"type": "open"}}\n\n'
+        yield f'data: {json.dumps({"type": "open"})}\n\n'
 
-        state = {
-            "session_id": session_id,
-            "messages": [HumanMessage(content=message)],
-            "user_query": message,
-            "current_intent": None,
-            "confidence_score": 0.0,
-            "is_task_interrupted": False,
-            "fallback_count": 0,
-            "repair_slots": {},
-            "ticket_id": None,
-            "ticket_status": None,
-        }
-
-        async for event in _graph_app.astream_events(state, config={"configurable": {"thread_id": session_id}}, version="v1"):
+        async for event in _graph_app.astream_events(
+            state, config={"configurable": {"thread_id": session_id}}, version="v2"
+        ):
             etype = event.get("event")
-            if etype == "on_chat_model_stream":
-                content = event["data"]["chunk"].content
-                if content:
-                    yield f'data: {{"type": "message", "content": "{content}"}}\n\n'
-            elif etype == "on_chain_end":
+            name = event.get("name")
+            node = event.get("metadata", {}).get("langgraph_node")
+
+            # RAG 节点：逐 token 流式输出
+            if etype == "on_chat_model_stream" and node == "rag_query":
+                chunk = event["data"]["chunk"].content
+                if chunk:
+                    yield f"data: {json.dumps({'type': 'message', 'content': chunk})}\n\n"
+
+            # 非 RAG 节点：节点结束时取最后一条 AIMessage
+            elif etype == "on_chain_end" and name == "LangGraph":
+                output = event["data"].get("output", {})
+                if isinstance(output, dict):
+                    messages = output.get("messages", [])
+                    last_msg = messages[-1] if messages else None
+                    if last_msg and hasattr(last_msg, "content") and last_msg.content:
+                        yield f"data: {json.dumps({'type': 'message', 'content': last_msg.content})}\n\n"
                 yield 'data: {"type": "end"}\n\n'
                 break
 
+        yield 'data: {"type": "end"}\n\n'
+        
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
