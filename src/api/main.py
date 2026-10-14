@@ -13,6 +13,8 @@ from langchain_core.messages import HumanMessage
 from graph.app import get_graph
 from graph.state import UserIntent
 import json
+from pathlib import Path
+from fastapi.responses import HTMLResponse
 
 
 # 全局变量：由 lifespan 在启动时初始化
@@ -54,6 +56,13 @@ async def health_check():
     """健康检查接口"""
     return {"status": "ok"}
 
+
+
+@api.get("/")
+def index():
+    html_path = Path(__file__).parent.parent / "static" / "index.html"
+    content = html_path.read_text(encoding="utf-8")
+    return HTMLResponse(content=content)
 
 @api.post("/chat")
 async def chat(request: ChatRequest):
@@ -144,29 +153,33 @@ async def stream_chat(
     async def event_stream():
         yield f'data: {json.dumps({"type": "open"})}\n\n'
 
+        final_reply = None
+
         async for event in _graph_app.astream_events(
-            state, config={"configurable": {"thread_id": session_id}}, version="v2"
+            state, config={"configurable": {"thread_id": session_id}},
         ):
             etype = event.get("event")
             name = event.get("name")
             node = event.get("metadata", {}).get("langgraph_node")
 
-            # RAG 节点：逐 token 流式输出
-            if etype == "on_chat_model_stream" and node == "rag_query":
+            # 1. 流式 token：只放行节点名包含 "rag" 的（模糊匹配，不怕改名）
+            if etype == "on_chat_model_stream" and node and "rag" in node.lower():
                 chunk = event["data"]["chunk"].content
                 if chunk:
                     yield f"data: {json.dumps({'type': 'message', 'content': chunk})}\n\n"
 
-            # 非 RAG 节点：节点结束时取最后一条 AIMessage
-            elif etype == "on_chain_end" and name == "LangGraph":
+            # 2. 节点结束时收集最终回复（不判断节点名，谁结束都记一下）
+            elif etype == "on_chain_end":
                 output = event["data"].get("output", {})
                 if isinstance(output, dict):
                     messages = output.get("messages", [])
                     last_msg = messages[-1] if messages else None
                     if last_msg and hasattr(last_msg, "content") and last_msg.content:
-                        yield f"data: {json.dumps({'type': 'message', 'content': last_msg.content})}\n\n"
-                yield 'data: {"type": "end"}\n\n'
-                break
+                        final_reply = last_msg.content
+
+        # 3. 兜底：如果流式 token 一个都没收到，把最终回复一次性发出去
+        if final_reply:
+            yield f"data: {json.dumps({'type': 'message', 'content': final_reply})}\n\n"
 
         yield 'data: {"type": "end"}\n\n'
         
